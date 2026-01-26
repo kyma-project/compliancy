@@ -19,6 +19,7 @@ jobs:
           CURRENT_RELEASE: ${{ inputs.version }}
         run: |
             echo "Building ${CURRENT_RELEASE}"
+            exit 1
 
   test:
     runs-on: ubuntu-latest
