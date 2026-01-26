@@ -29,3 +29,19 @@ jobs:
           CURRENT_RELEASE: ${{ inputs.version }}
         run: |
             echo "Testing ${CURRENT_RELEASE}"
+
+   upload-artifact :
+   runs-on: ubuntu-latest
+  
+   steps:
+      - name: Save release version
+        env:
+          CURRENT_RELEASE: ${{ inputs.version }}
+        run: | 
+          echo "$CURRENT_RELEASE" > release.txt
+
+      - name: Upload release number artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-version
+          path: release.txt
