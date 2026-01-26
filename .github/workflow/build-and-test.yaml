@@ -1,0 +1,31 @@
+name: Build and Test
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to be released (major.minor.patch)"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Build
+        env:
+          CURRENT_RELEASE: ${{ inputs.version }}
+        run: |
+            echo "Building ${CURRENT_RELEASE}"
+
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test
+        env:
+          CURRENT_RELEASE: ${{ inputs.version }}
+        run: |
+            echo "Testing ${CURRENT_RELEASE}"
