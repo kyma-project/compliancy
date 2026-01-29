@@ -2,6 +2,7 @@ name: Build and Test
 
 permissions:
   contents: read
+  actions: read
 
 on:
   workflow_dispatch:
@@ -19,7 +20,6 @@ jobs:
           CURRENT_RELEASE: ${{ inputs.version }}
         run: |
             echo "Building ${CURRENT_RELEASE}"
-            exit 1
 
   test:
     runs-on: ubuntu-latest
