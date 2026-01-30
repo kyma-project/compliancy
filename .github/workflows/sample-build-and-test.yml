@@ -1,4 +1,4 @@
-name: Build and Test
+name: Sample Build and Test
 
 permissions:
   contents: read
