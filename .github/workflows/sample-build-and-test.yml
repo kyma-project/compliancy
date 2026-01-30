@@ -34,7 +34,7 @@ jobs:
   upload-release-report:
     needs: [test]
     if: ${{ needs.test.result == 'success' }}
-    uses: ./.github/workflows/upload-release-report.yml
+    uses: kyma-project/compliancy/.github/workflows/upload-release-report.yml@main
     with:
       release_version: ${{ inputs.version }}
     secrets: inherit
