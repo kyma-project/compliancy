@@ -19,7 +19,7 @@ on:
         required: true
 
 jobs:
-  monitor:
+  upload-release-report:
     runs-on: ubuntu-latest
 
     permissions:
