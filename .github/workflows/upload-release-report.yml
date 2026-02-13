@@ -17,24 +17,26 @@ on:
       RELEASE_LOG_UPLOADER_SA:
         description: "Service account used to upload release reports to GCP"
         required: true
-
+env:
+    GH_TOKEN: ${{ secrets.RELEASE_LOG_UPLOADER_GH_TOKEN }}  
+    
 jobs:
   upload-release-report:
     runs-on: ubuntu-latest
-
+     
     permissions:
       actions: read
       contents: read
-
+      
     steps:
       - name: Set release version
         run: |
           echo "RELEASE_VERSION=${{ inputs.release_version }}" >> $GITHUB_ENV
           echo "Release number: ${{ inputs.release_version }}"
-
+  
       - name: Resolve run ID
         run: echo "RUN_ID=${{ inputs.run_id || github.run_id }}" >> $GITHUB_ENV
-
+  
       - name: Create job summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -43,28 +45,28 @@ jobs:
         run: |
           echo "Fetching workflow run details for RUN_ID=$RUN_ID..."
           gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID > run_summary.json
-
+  
           echo "Fetching jobs details..."
           gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID/jobs > jobs_summary.json
-
+  
           echo "Fetching logs from the run"
-          #gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs > run_logs.zip
+          gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs > run_logs.zip
           
           zip "${REPO}_${RELEASE_VERSION}.zip" \
             run_summary.json \
             jobs_summary.json \
             run_logs.zip
-
+  
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.RELEASE_LOG_UPLOADER_SA }}
-
+  
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
-
+  
       - name: Upload report to the GCP bucket
         env:
           REPO: ${{ github.event.repository.name }}
