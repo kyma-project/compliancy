@@ -18,7 +18,7 @@ on:
         description: "Service account used to upload release reports to GCP"
         required: true
       RELEASE_LOG_UPLOADER_GH_TOKEN:
-       description: "Kyma-bot account used to get github logs"
+        description: "Kyma-bot account used to get github logs"
         required: true
  
 jobs:
