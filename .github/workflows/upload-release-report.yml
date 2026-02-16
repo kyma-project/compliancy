@@ -17,8 +17,6 @@ on:
       RELEASE_LOG_UPLOADER_SA:
         description: "Service account used to upload release reports to GCP"
         required: true
-env:
- GH_TOKEN: ${{ secrets.RELEASE_LOG_UPLOADER_GH_TOKEN }}   
  
 jobs:
   upload-release-report:
@@ -50,7 +48,7 @@ jobs:
           gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID/jobs > jobs_summary.json
   
           echo "Fetching logs from the run"
-          # gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs > run_logs.zip
+          gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs > run_logs.zip
           
           zip "${REPO}_${RELEASE_VERSION}.zip" \
             run_summary.json \
