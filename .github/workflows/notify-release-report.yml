@@ -1,0 +1,26 @@
+name: Notify Release Report
+
+on:
+  workflow_call:
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send repository_dispatch
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.RELEASE_LOG_UPLOADER_GH_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/kyma-project/compliancy \
+            -d '{
+              "event_type": "upload-release-report",
+              "client_payload": {
+                "repository": "${{ github.repository }}",
+                "run_id": "${{ github.run_id }}",
+                "workflow": "${{ github.workflow }}",
+                "conclusion": "${{ job.status }}",
+                "branch": "${{ github.ref_name }}"
+              }
+            }'
