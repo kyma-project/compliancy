@@ -1,62 +1,153 @@
-name: Generate SBOM from Container Image
+name: Generate Module SBOM (On PR Merge)
 
 on:
-  workflow_call:
-    inputs:
-      image:
-        description: "Image name to generate SBOM from"
-        required: true
-        type: string
-      release_version:
-        description: "Release version label"
-        required: false
-        type: string
-      upload-artifact:
-        description: "Upload SBOM artifact"
-        required: false
-        default: true
-        type: boolean
-
-    outputs:
-      sbom-path:
-        description: "Generated SBOM file path"
-        value: ${{ jobs.sbom.outputs.sbom-path }}
+  pull_request:
+    types: [closed]
+    paths:
+      - '**/module-config.yaml'
 
 jobs:
-  sbom:
-    runs-on: ubuntu-latest
+  extract-images:
+    if: github.event.pull_request.merged == true
+    runs-on: [self-hosted, solinas]
     outputs:
-      sbom-path: ${{ steps.meta.outputs.sbom_path }}
+      images: ${{ steps.collect.outputs.images }}
+      module_name: ${{ steps.meta.outputs.module_name }}
+      module_version: ${{ steps.meta.outputs.module_version }}
 
     steps:
-      - name: Checkout (optional, for metadata)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Syft (for image SBOM)
+      - name: Install yq and jq
+        run: |
+          mkdir -p ~/.local/bin
+          # Install jq
+          wget https://github.com/jqlang/jq/releases/latest/download/jq-linux-amd64 -O ~/.local/bin/jq
+          chmod +x ~/.local/bin/jq
+          # Install yq
+          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O ~/.local/bin/yq
+          chmod +x ~/.local/bin/yq
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - name: Locate module-config.yaml
+        id: locate
+        run: |
+          FILE=$(find . -name module-config.yaml | head -n 1)
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+          echo "Found module config at: $FILE"
+      - name: Read module metadata
+        id: meta
+        run: |
+          FILE="${{ steps.locate.outputs.file }}"
+          REPO=$(yq e '.repository' "$FILE")
+          VERSION=$(yq e '.version' "$FILE")
+          MANIFEST=$(yq e '.manifest' "$FILE")
+          NAME=$(yq e '.name' "$FILE")
+
+          # Extract owner/repo from URL for GitHub Actions checkout
+          REPO_PATH=$(echo "$REPO" | sed -e 's|https://github.com/||' -e 's|\.git$||')
+
+          echo "repo=$REPO_PATH" >> $GITHUB_OUTPUT
+          echo "manifest=$MANIFEST" >> $GITHUB_OUTPUT
+          echo "module_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "module_name=$NAME" >> $GITHUB_OUTPUT
+      - name: Download manifest from release
+        run: |
+          REPO_PATH="${{ steps.meta.outputs.repo }}"
+          VERSION="${{ steps.meta.outputs.module_version }}"
+          MANIFEST="${{ steps.meta.outputs.manifest }}"
+
+          mkdir -p module-manifests
+          gh release download "$VERSION" \
+            --repo "$REPO_PATH" \
+            --pattern "$MANIFEST" \
+            --dir module-manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Extract images from manifest
+        id: collect
+        run: |
+          MANIFEST_PATH="module-manifests/${{ steps.meta.outputs.manifest }}"
+
+          # Extract container images and env values that look like images (contain ":")
+          IMAGES=$(yq eval-all '
+            select(.kind == "Deployment") |
+            .spec.template.spec.containers[] |
+            (.image, .env[]?.value // empty)
+          ' "$MANIFEST_PATH" | grep ":" | sort -u)
+
+          echo "Images found:"
+          echo "$IMAGES"
+
+          # Convert to JSON array
+          JSON=$(printf '%s\n' "$IMAGES" | jq -R . | jq -s .)
+          echo "images=$JSON" >> $GITHUB_OUTPUT
+  generate-sbom:
+    needs: extract-images
+    runs-on: [self-hosted, solinas]
+
+    strategy:
+      matrix:
+        image: ${{ fromJson(needs.extract-images.outputs.images) }}
+
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      - name: Configure Docker for GCP Artifact Registry
+        run: gcloud auth configure-docker europe-docker.pkg.dev
+
+      - name: Pull image
+        run: |
+          IMAGE="${{ matrix.image }}"
+          docker pull "$IMAGE"
+      - name: Install Syft
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Generate SBOM from image
+      - name: Generate SBOM
         run: |
-          IMAGE="${{ inputs.image }}"
-          echo "Generating SBOM for $IMAGE"
-          syft $IMAGE -o cyclonedx-json --schema-version 1.4 > sbom.json
-
-      - name: Rename SBOM with metadata
-        id: meta
-        run: |
-          VERSION="${{ inputs.release_version }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="${{ github.sha }}"
-          fi
-          FILE="sbom-${{ github.event.repository.name }}-${VERSION}.json"
-          mv sbom.json "$FILE"
-          echo "sbom_path=$FILE" >> $GITHUB_OUTPUT
-
+          IMAGE="${{ matrix.image }}"
+          SAFE_NAME=$(echo "$IMAGE" | sed 's/[:\/]/-/g')
+          syft docker:"$IMAGE" \
+            -o cyclonedx-json \
+            --schema-version 1.4 \
+            > "sbom-$SAFE_NAME.json"
       - name: Upload SBOM artifact
-        if: inputs.upload-artifact == true
         uses: actions/upload-artifact@v4
         with:
-          name: sbom
-          path: ${{ steps.meta.outputs.sbom_path }}
+          name: sbom-${{ strategy.job-index }}
+          path: sbom-*.json
+
+  merge-sbom:
+    needs: generate-sbom
+    runs-on: [self-hosted, solinas]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: sboms
+
+      - name: Install CycloneDX CLI
+        run: |
+          mkdir -p ~/.local/bin
+          curl -L https://github.com/CycloneDX/cyclonedx-cli/releases/latest/download/cyclonedx-linux-x64 \
+            -o ~/.local/bin/cyclonedx
+          chmod +x ~/.local/bin/cyclonedx
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - name: Merge SBOMs
+        run: |
+          FILES=$(find sboms -name "*.json")
+          cyclonedx merge \
+            --input-files $FILES \
+            --output-file merged-sbom.json \
+            --output-format json \
+            --name "${{ needs.extract-images.outputs.module_name }}" \
+            --version "${{ needs.extract-images.outputs.module_version }}"
+      - name: Upload merged SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-module-sbom
+          path: merged-sbom.json
