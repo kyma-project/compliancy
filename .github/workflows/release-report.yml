@@ -24,19 +24,21 @@ jobs:
       - name: Create job summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
+          SOURCE_REPO: ${{ github.event.client_payload.repository }}
         run: |
-          echo "Fetching workflow run details for RUN_ID=$RUN_ID..."
-          gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID > run_summary.json
-  
+          echo "Fetching workflow run details for RUN_ID=$RUN_ID from $SOURCE_REPO..."
+          gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID > run_summary.json
+
           echo "Fetching jobs details..."
-          gh api repos/$OWNER/$REPO/actions/runs/$RUN_ID/jobs > jobs_summary.json
-  
+          gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID/jobs > jobs_summary.json
+
           echo "Fetching logs from the run"
-          gh run view "$RUN_ID" --repo "$OWNER/$REPO" --log > run.log   
-          
-          zip "${REPO}_${RELEASE_VERSION}.zip" \
+          gh run view "$RUN_ID" --repo "$SOURCE_REPO" --log > run.log
+
+          # Extract repo name from full path (e.g., kyma/module-name -> module-name)
+          REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
+
+          zip "${REPO_NAME}_${RELEASE_VERSION}.zip" \
             run_summary.json \
             jobs_summary.json \
             run.log
@@ -53,6 +55,9 @@ jobs:
   
       - name: Upload report to the GCP bucket
         env:
-          REPO: ${{ github.event.repository.name }}
+          SOURCE_REPO: ${{ github.event.client_payload.repository }}
         run: |
-          gsutil cp "${REPO}_${RELEASE_VERSION}.zip" gs://kyma_release_test_logs/
+          # Extract repo name from full path (e.g., kyma/module-name -> module-name)
+          REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
+
+          gsutil cp "${REPO_NAME}_${RELEASE_VERSION}.zip" gs://kyma_release_test_logs/
