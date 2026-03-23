@@ -21,7 +21,35 @@ jobs:
       - name: Resolve run ID
         run: echo "RUN_ID=${{ github.event.client_payload.run_id || github.event.client_payload.run_id }}" >> $GITHUB_ENV
   
-      - name: Create job summary
+      - name: Wait for workflow completion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ github.event.client_payload.repository }}
+        run: |
+          echo "Waiting for workflow run $RUN_ID from $SOURCE_REPO to complete..."
+
+          # Wait for the workflow to complete (max 30 minutes)
+          timeout=1800
+          elapsed=0
+          while [ $elapsed -lt $timeout ]; do
+            status=$(gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID --jq '.status')
+            echo "Current status: $status (elapsed: ${elapsed}s)"
+
+            if [ "$status" = "completed" ]; then
+              echo "Workflow completed!"
+              break
+            fi
+
+            sleep 30
+            elapsed=$((elapsed + 30))
+          done
+
+          if [ $elapsed -ge $timeout ]; then
+            echo "::error::Timeout waiting for workflow to complete"
+            exit 1
+          fi
+
+      - name: Fetch workflow data and create report
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_REPO: ${{ github.event.client_payload.repository }}
@@ -32,8 +60,17 @@ jobs:
           echo "Fetching jobs details..."
           gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID/jobs > jobs_summary.json
 
-          echo "Fetching logs from the run"
-          gh run view "$RUN_ID" --repo "$SOURCE_REPO" --log > run.log
+          echo "Fetching logs from the run (using HTTP/1.1 to avoid goaway errors)..."
+          GODEBUG=http2client=0 gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID/logs > logs.zip
+
+          # Extract the logs
+          unzip -q logs.zip -d logs/
+
+          # Combine all log files into a single run.log
+          find logs/ -name "*.txt" -type f -exec cat {} \; > run.log
+
+          # Clean up extracted logs directory
+          rm -rf logs/
 
           # Extract repo name from full path (e.g., kyma/module-name -> module-name)
           REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
@@ -42,6 +79,8 @@ jobs:
             run_summary.json \
             jobs_summary.json \
             run.log
+
+          echo "Report created: ${REPO_NAME}_${RELEASE_VERSION}.zip"
   
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
