@@ -100,3 +100,47 @@ jobs:
           REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
 
           gsutil cp "${REPO_NAME}_${RELEASE_VERSION}.zip" gs://kyma_release_test_logs/
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          SOURCE_REPO="${{ github.event.client_payload.repository }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "Release Report Workflow Failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Release Report Failed"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n'"$SOURCE_REPO"'"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Release:*\n'"$RELEASE_VERSION"'"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Source Run:*\n'"$RUN_ID"'"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Workflow:*\n<'"$RUN_URL"'|View Logs>"
+                    }
+                  ]
+                }
+              ]
+            }'
