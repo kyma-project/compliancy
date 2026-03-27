@@ -1,0 +1,173 @@
+name: Generate Busola SBOM
+
+on:
+  workflow_call:
+    inputs:
+      release_version:
+        required: true
+        type: string
+        description: "Release version/tag for the images"
+
+jobs:
+  generate-sbom:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - image_name: busola-web
+            image_path: europe-docker.pkg.dev/kyma-project/prod/busola-web
+            needs_auth: false
+          - image_name: busola-backend
+            image_path: europe-docker.pkg.dev/kyma-project/prod/busola-backend
+            needs_auth: false
+          - image_name: fips-busola
+            image_path: europe-docker.pkg.dev/kyma-project/prod/external/fips-busola
+            needs_auth: true
+
+    steps:
+      - name: Authenticate to Google Cloud
+        if: matrix.needs_auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.KYMA_RESTRICTED_REGISTRY_SA }}'
+
+      - name: Set up Google Cloud SDK
+        if: matrix.needs_auth
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCP Artifact Registry
+        if: matrix.needs_auth
+        run: gcloud auth configure-docker europe-docker.pkg.dev
+
+      - name: Pull image
+        run: |
+          set -e
+
+          IMAGE="${{ matrix.image_path }}:${{ inputs.release_version }}"
+          echo "Attempting to pull image: $IMAGE"
+
+          if docker pull "$IMAGE"; then
+            echo "Successfully pulled image: $IMAGE"
+          else
+            echo "::error::Failed to pull image: $IMAGE"
+            exit 1
+          fi
+
+      - name: Install Syft
+        run: |
+          set -e
+
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b ~/.local/bin
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Generate SBOM
+        id: generate
+        run: |
+          set -e
+
+          IMAGE="${{ matrix.image_path }}:${{ inputs.release_version }}"
+          IMAGE_NAME="${{ matrix.image_name }}"
+
+          echo "Generating SBOM for image: $IMAGE"
+
+          syft docker:"$IMAGE" \
+            -o cyclonedx-json@1.4 \
+            > "sbom-$IMAGE_NAME.json"
+
+          echo "SBOM generated: sbom-$IMAGE_NAME.json"
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: busola-${{ inputs.release_version }}-${{ matrix.image_name }}
+          path: sbom-*.json
+
+  merge-sbom:
+    needs: generate-sbom
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          path: sboms
+
+      - name: Install CycloneDX CLI
+        run: |
+          mkdir -p ~/.local/bin
+          curl -L https://github.com/CycloneDX/cyclonedx-cli/releases/latest/download/cyclonedx-linux-x64 \
+            -o ~/.local/bin/cyclonedx
+          chmod +x ~/.local/bin/cyclonedx
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Merge SBOMs
+        run: |
+          FILES=$(find sboms -name "*.json")
+          cyclonedx merge \
+            --input-files $FILES \
+            --output-file merged-sbom.json \
+            --output-format json \
+            --name "busola" \
+            --version "${{ inputs.release_version }}"
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.RELEASE_LOG_UPLOADER_SA }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
+
+      - name: Upload SBOM to GCS bucket
+        run: |
+          set -e
+
+          RELEASE_VERSION="${{ inputs.release_version }}"
+
+          echo "Uploading SBOM to gs://kyma_release_test_logs/SBOM/busola-$RELEASE_VERSION/sbom.json"
+
+          gsutil cp merged-sbom.json "gs://kyma_release_test_logs/SBOM/busola-$RELEASE_VERSION/sbom.json"
+
+          echo "SBOM uploaded successfully"
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          RELEASE_VERSION="${{ inputs.release_version }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "Busola SBOM Generation Failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Busola SBOM Generation Failed"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Component:*\nbusola"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Release:*\n'"$RELEASE_VERSION"'"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Workflow:*\n<'"$RUN_URL"'|View Logs>"
+                    }
+                  ]
+                }
+              ]
+            }'
