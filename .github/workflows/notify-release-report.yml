@@ -42,3 +42,22 @@ jobs:
             echo "repository_dispatch failed"
             exit 1
           fi
+          
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":x: *Notify Release Report Failed*\n*Repository:* ${{ github.repository }}\n*Workflow:* ${{ github.workflow }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+                  }
+                }
+              ]
+            }'
