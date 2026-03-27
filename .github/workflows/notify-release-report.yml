@@ -1,146 +1,44 @@
-name: Release report
+name: Notify Release Report
 
 on:
-  repository_dispatch:
-    types: [upload-release-report]
+  workflow_call:
+    inputs:
+      release_version:
+        required: false
+        type: string
 
 jobs:
-  upload-release-report:
+  dispatch:
     runs-on: ubuntu-latest
-     
-    permissions:
-      actions: read
-      contents: read
-      
+
     steps:
-      - name: Set release version
+      - name: Send repository_dispatch
         run: |
-          echo "RELEASE_VERSION=${{ github.event.client_payload.release_version }}" >> $GITHUB_ENV
-          echo "Release number: ${{ github.event.client_payload.release_version }}"
-  
-      - name: Resolve run ID
-        run: echo "RUN_ID=${{ github.event.client_payload.run_id || github.event.client_payload.run_id }}" >> $GITHUB_ENV
-  
-      - name: Wait for workflow completion
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ github.event.client_payload.repository }}
-        run: |
-          echo "Waiting for workflow run $RUN_ID from $SOURCE_REPO to complete..."
-
-          # Wait for the workflow to complete (max 30 minutes)
-          timeout=1800
-          elapsed=0
-          while [ $elapsed -lt $timeout ]; do
-            status=$(gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID --jq '.status')
-            echo "Current status: $status (elapsed: ${elapsed}s)"
-
-            if [ "$status" = "completed" ]; then
-              echo "Workflow completed!"
-              break
-            fi
-
-            sleep 30
-            elapsed=$((elapsed + 30))
-          done
-
-          if [ $elapsed -ge $timeout ]; then
-            echo "::error::Timeout waiting for workflow to complete"
+          set -e
+    
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer ${{ secrets.RELEASE_LOG_UPLOADER_GH_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/kyma-project/compliancy/dispatches \
+            -d '{
+              "event_type": "upload-release-report",
+              "client_payload": {
+                "repository": "${{ github.repository }}",
+                "run_id": "${{ github.run_id }}",
+                "workflow": "${{ github.workflow }}",
+                "conclusion": "${{ job.status }}",
+                "branch": "${{ github.ref_name }}",
+                "release_version": "${{ inputs.release_version }}"
+              }
+            }')
+    
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          STATUS=$(echo "$RESPONSE" | tail -n1)
+    
+          echo "HTTP Status: $STATUS"
+          echo "Response: $BODY"
+    
+          if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
+            echo "repository_dispatch failed"
             exit 1
           fi
-
-      - name: Fetch workflow data and create report
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ github.event.client_payload.repository }}
-        run: |
-          echo "Fetching workflow run details for RUN_ID=$RUN_ID from $SOURCE_REPO..."
-          gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID > run_summary.json
-
-          echo "Fetching jobs details..."
-          gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID/jobs > jobs_summary.json
-
-          echo "Fetching logs from the run (using HTTP/1.1 to avoid goaway errors)..."
-          GODEBUG=http2client=0 gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID/logs > logs.zip
-
-          # Extract the logs
-          unzip -q logs.zip -d logs/
-
-          # Combine all log files into a single run.log
-          find logs/ -name "*.txt" -type f -exec cat {} \; > run.log
-
-          # Clean up extracted logs directory
-          rm -rf logs/
-
-          # Extract repo name from full path (e.g., kyma/module-name -> module-name)
-          REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
-
-          zip "${REPO_NAME}_${RELEASE_VERSION}.zip" \
-            run_summary.json \
-            jobs_summary.json \
-            run.log
-
-          echo "Report created: ${REPO_NAME}_${RELEASE_VERSION}.zip"
-  
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.RELEASE_LOG_UPLOADER_SA }}
-  
-      - name: Set up Google Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
-  
-      - name: Upload report to the GCP bucket
-        env:
-          SOURCE_REPO: ${{ github.event.client_payload.repository }}
-        run: |
-          # Extract repo name from full path (e.g., kyma/module-name -> module-name)
-          REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
-
-          gsutil cp "${REPO_NAME}_${RELEASE_VERSION}.zip" gs://kyma_release_test_logs/
-
-      - name: Notify Slack on failure
-        if: failure()
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          SOURCE_REPO="${{ github.event.client_payload.repository }}"
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          curl -X POST "$SLACK_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "text": "Release Report Workflow Failed",
-              "blocks": [
-                {
-                  "type": "header",
-                  "text": {
-                    "type": "plain_text",
-                    "text": "Release Report Failed"
-                  }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Repository:*\n'"$SOURCE_REPO"'"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Release:*\n'"$RELEASE_VERSION"'"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Source Run:*\n'"$RUN_ID"'"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Workflow:*\n<'"$RUN_URL"'|View Logs>"
-                    }
-                  ]
-                }
-              ]
-            }'
