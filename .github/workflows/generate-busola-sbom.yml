@@ -78,7 +78,7 @@ jobs:
           echo "SBOM generated: sbom-$IMAGE_NAME.json"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: busola-${{ inputs.release_version }}-${{ matrix.image_name }}
           path: sbom-*.json
@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           path: sboms
 
@@ -131,3 +131,43 @@ jobs:
           gsutil cp merged-sbom.json "gs://kyma_release_test_logs/SBOM/busola-$RELEASE_VERSION/sbom.json"
 
           echo "SBOM uploaded successfully"
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          RELEASE_VERSION="${{ inputs.release_version }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "Busola SBOM Generation Failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Busola SBOM Generation Failed"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Component:*\nbusola"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Release:*\n'"$RELEASE_VERSION"'"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Workflow:*\n<'"$RUN_URL"'|View Logs>"
+                    }
+                  ]
+                }
+              ]
+            }'
