@@ -1,0 +1,160 @@
+name: Release report
+
+on:
+  repository_dispatch:
+    types: [upload-release-report]
+
+jobs:
+  upload-release-report:
+    runs-on: ubuntu-latest
+     
+    permissions:
+      actions: read
+      contents: read
+      
+    steps:
+      - name: Set release version
+        run: |
+          echo "RELEASE_VERSION=${{ github.event.client_payload.release_version }}" >> $GITHUB_ENV
+          echo "Release number: ${{ github.event.client_payload.release_version }}"
+  
+      - name: Resolve run ID
+        run: echo "RUN_ID=${{ github.event.client_payload.run_id || github.event.client_payload.run_id }}" >> $GITHUB_ENV
+  
+      - name: Wait for workflow completion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ github.event.client_payload.repository }}
+        run: |
+          echo "Waiting for workflow run $RUN_ID from $SOURCE_REPO to complete..."
+
+          # Wait for the workflow to complete (max 30 minutes)
+          timeout=1800
+          elapsed=0
+          while [ $elapsed -lt $timeout ]; do
+            status=$(gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID --jq '.status')
+            echo "Current status: $status (elapsed: ${elapsed}s)"
+
+            if [ "$status" = "completed" ]; then
+              echo "Workflow completed!"
+              break
+            fi
+
+            sleep 30
+            elapsed=$((elapsed + 30))
+          done
+
+          if [ $elapsed -ge $timeout ]; then
+            echo "::error::Timeout waiting for workflow to complete"
+            exit 1
+          fi
+
+      - name: Fetch workflow data and create report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ github.event.client_payload.repository }}
+        run: |
+          echo "Fetching workflow run details for RUN_ID=$RUN_ID from $SOURCE_REPO..."
+          gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID > run_summary.json
+
+          echo "Fetching jobs details..."
+          gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID/jobs > jobs_summary.json
+
+          echo "Fetching logs from the run (using HTTP/1.1 to avoid goaway errors)..."
+          GODEBUG=http2client=0 gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID/logs > logs.zip
+
+          # Extract the logs
+          unzip -q logs.zip -d logs/
+
+          # Combine all log files into a single run.log
+          find logs/ -name "*.txt" -type f -exec cat {} \; > run.log
+
+          # Clean up extracted logs directory
+          rm -rf logs/
+
+          # Extract repo name from full path (e.g., kyma/module-name -> module-name)
+          REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
+
+          zip "${REPO_NAME}_${RELEASE_VERSION}.zip" \
+            run_summary.json \
+            jobs_summary.json \
+            run.log
+
+          echo "Report created: ${REPO_NAME}_${RELEASE_VERSION}.zip"
+  
+      # Get the release-log-uploader service account based on the event type.
+      # Service account is used to authenticate in GCP.
+      - name: Get release-log-uploader gcp service account
+        id: get-release-log-uploader-gcp-service-account
+        run: |
+            echo "RELEASE_LOG_UPLOADER_EMAIL=${{ vars.RELEASE_LOG_UPLOADER_EMAIL }}" >> $GITHUB_OUTPUT
+
+      # Using access-token as it can be used directly as a bearer token.
+      - name: Authenticate in GCP
+        id: authenticate_in_gcp
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GH_COM_KYMA_PROJECT_GCP_WORKLOAD_IDENTITY_FEDERATION_PROVIDER }}
+          token_format: "access_token"
+          request_reason: "${{ github.repository_owner }}/${{ github.repository }}/${{ github.workflow }}/${{ github.run_id }}"
+          # service_account is required for the token_format "access_token"
+          service_account: ${{ steps.get-release-log-uploader-gcp-service-account.outputs.RELEASE_LOG_UPLOADER_EMAIL }}
+  
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
+  
+      - name: Upload report to the GCP bucket
+        env:
+          SOURCE_REPO: ${{ github.event.client_payload.repository }}
+        run: |
+          # Extract repo name from full path (e.g., kyma/module-name -> module-name)
+          REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
+
+          gsutil cp "${REPO_NAME}_${RELEASE_VERSION}.zip" gs://kyma_release_test_logs/
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          SOURCE_REPO="${{ github.event.client_payload.repository }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "Release Report Workflow Failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Release Report Failed"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n'"$SOURCE_REPO"'"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Release:*\n'"$RELEASE_VERSION"'"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Source Run:*\n'"$RUN_ID"'"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Workflow:*\n<'"$RUN_URL"'|View Logs>"
+                    }
+                  ]
+                }
+              ]
+            }'
