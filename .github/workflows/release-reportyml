@@ -1,4 +1,4 @@
-name: Release report v2
+name: Release report
 
 on:
   repository_dispatch:
