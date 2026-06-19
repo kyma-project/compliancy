@@ -9,6 +9,9 @@ on:
     inputs:
       version:
         description: "Version to be released (major.minor.patch)"
+      component:
+        description: "Component slug as registered in kyma/compliancy components.yaml"
+        required: true
 
 jobs:
   build:
@@ -47,3 +50,12 @@ jobs:
     secrets: inherit
     with:
       release_version: ${{ inputs.version }}
+
+  notify-sbom:
+    needs: test
+    if: ${{ needs.test.result == 'success' }}
+    uses: kyma-project/compliancy/.github/workflows/notify-component-sbom.yml@main
+    secrets: inherit
+    with:
+      component: ${{ inputs.component }}
+      version: ${{ inputs.version }}

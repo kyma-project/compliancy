@@ -1,0 +1,94 @@
+name: Notify Component SBOM Upload
+
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: "Component slug as registered in kyma/compliancy components.yaml"
+        required: true
+        type: string
+      version:
+        description: "Component version to upload SBOM for"
+        required: true
+        type: string
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    environment: prod
+
+    # id-token: write is required to mint the OIDC token that compliancy
+    # verifies on github.tools.sap as proof of caller identity.
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -e
+          if ! [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version '$VERSION'. Expected semver (e.g. 1.2.3, v1.2.3, 1.2.3-rc.1)."
+            exit 1
+          fi
+
+      - name: Generate Compliancy App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.COMPLIANCY_APP_ID }}
+          private-key: ${{ secrets.COMPLIANCY_APP_PRIVATE_KEY }}
+          owner: kyma
+          repositories: compliancy
+          github-api-url: https://github.tools.sap/api/v3
+
+      - name: Mint OIDC token
+        id: oidc
+        run: |
+          set -e
+          token=$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=compliancy-cumulus-fetch" \
+            | jq -r .value)
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::error::Failed to mint OIDC token"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Send repository_dispatch to kyma/compliancy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -e
+          gh api \
+            --hostname github.tools.sap \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            /repos/kyma/compliancy/dispatches \
+            -f event_type=upload-component-sbom \
+            -f "client_payload[component]=${{ inputs.component }}" \
+            -f "client_payload[version]=${{ inputs.version }}" \
+            -f "client_payload[oidc_token]=${{ steps.oidc.outputs.token }}"
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":x: *Notify Component SBOM Failed*\n*Repository:* ${{ github.repository }}\n*Component:* ${{ inputs.component }}\n*Version:* ${{ inputs.version }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+                  }
+                }
+              ]
+            }'
