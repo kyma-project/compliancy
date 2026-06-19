@@ -54,6 +54,9 @@ jobs:
   notify-sbom:
     needs: test
     if: ${{ needs.test.result == 'success' }}
+    permissions:
+      id-token: write
+      contents: read
     uses: kyma-project/compliancy/.github/workflows/notify-component-sbom.yml@main
     secrets: inherit
     with:
