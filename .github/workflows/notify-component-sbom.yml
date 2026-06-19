@@ -36,13 +36,23 @@ jobs:
 
       - name: Generate Compliancy App installation token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.COMPLIANCY_APP_ID }}
           private-key: ${{ secrets.COMPLIANCY_APP_PRIVATE_KEY }}
           owner: kyma
           repositories: compliancy
           github-api-url: https://github.tools.sap/api/v3
+
+      - name: Debug — verify App token works on github.tools.sap
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -e
+          echo "Token-bearer identity:"
+          gh api --hostname github.tools.sap /installation/repositories --jq '.repositories[].full_name' || true
+          echo "Target repo lookup:"
+          gh api --hostname github.tools.sap /repos/kyma/compliancy --jq '.full_name'
 
       - name: Mint OIDC token
         id: oidc
