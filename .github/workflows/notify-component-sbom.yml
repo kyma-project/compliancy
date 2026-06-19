@@ -36,7 +36,7 @@ jobs:
 
       - name: Generate Compliancy App installation token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.COMPLIANCY_APP_ID }}
           private-key: ${{ secrets.COMPLIANCY_APP_PRIVATE_KEY }}
@@ -48,11 +48,29 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          set -e
-          echo "Token-bearer identity:"
-          gh api --hostname github.tools.sap /installation/repositories --jq '.repositories[].full_name' || true
-          echo "Target repo lookup:"
+          set +e
+          echo "Token length: ${#GH_TOKEN}"
+          echo "Token prefix: ${GH_TOKEN:0:4}..."
+          echo
+          echo "=== Test 1: github.tools.sap /installation/repositories ==="
+          gh api --hostname github.tools.sap /installation/repositories --jq '.repositories[].full_name'
+          echo "Exit: $?"
+          echo
+          echo "=== Test 2: github.tools.sap /repos/kyma/compliancy ==="
           gh api --hostname github.tools.sap /repos/kyma/compliancy --jq '.full_name'
+          echo "Exit: $?"
+          echo
+          echo "=== Test 3: github.com /installation/repositories (sanity — should 401 if token is GHES-scoped) ==="
+          gh api /installation/repositories --jq '.repositories[].full_name'
+          echo "Exit: $?"
+          echo
+          echo "=== Test 4: raw curl against github.tools.sap with explicit Bearer ==="
+          curl -sS -o /tmp/r.json -w "HTTP %{http_code}\n" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://github.tools.sap/api/v3/repos/kyma/compliancy
+          head -c 400 /tmp/r.json; echo
+          true
 
       - name: Mint OIDC token
         id: oidc
