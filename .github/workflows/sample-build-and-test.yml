@@ -48,17 +48,9 @@ jobs:
     if: ${{ needs.test.result == 'success' }}
     uses: kyma-project/compliancy/.github/workflows/notify-release-report.yml@main
     secrets: inherit
-    with:
-      release_version: ${{ inputs.version }}
-
-  notify-sbom:
-    needs: test
-    if: ${{ needs.test.result == 'success' }}
     permissions:
       id-token: write
       contents: read
-    uses: kyma-project/compliancy/.github/workflows/notify-component-sbom.yml@main
-    secrets: inherit
     with:
       component: ${{ inputs.component }}
-      version: ${{ inputs.version }}
+      release_version: ${{ inputs.version }}
