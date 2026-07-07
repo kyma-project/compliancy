@@ -120,7 +120,7 @@ jobs:
       - name: Notify Slack on failure
         if: failure()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.COMPLIANCY_SLACK_WEBHOOK_URL }}
         run: |
           SOURCE_REPO="${{ github.event.client_payload.repository }}"
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

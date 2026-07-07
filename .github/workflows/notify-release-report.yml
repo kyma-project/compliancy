@@ -47,7 +47,7 @@ jobs:
       - name: Notify Slack on failure
         if: failure()
         env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK: ${{ secrets.COMPLIANCY_SLACK_WEBHOOK_URL }}
         run: |
           curl -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
