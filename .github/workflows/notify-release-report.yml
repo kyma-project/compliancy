@@ -13,12 +13,23 @@ jobs:
     environment: prod
 
     steps:
+      - name: Generate token from GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.COMPLIANCY_APP_ID_GITHUB_COM }}
+          private-key: ${{ secrets.COMPLIANCY_APP_PRIVATE_KEY_GITHUB_COM }}
+          owner: kyma-project
+          repositories: compliancy
+
       - name: Send repository_dispatch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -e
-    
+
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            -H "Authorization: Bearer ${{ secrets.RELEASE_LOG_UPLOADER_GH_TOKEN }}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/kyma-project/compliancy/dispatches \
             -d '{
