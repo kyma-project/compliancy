@@ -52,5 +52,4 @@ jobs:
       id-token: write
       contents: read
     with:
-      component: ${{ inputs.component }}
       release_version: ${{ inputs.version }}
