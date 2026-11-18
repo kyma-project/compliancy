@@ -15,6 +15,9 @@ jobs:
       id-token: write
       
     steps:
+      - name: Checkout compliancy
+        uses: actions/checkout@v4
+
       - name: Set release version
         env:
           RAW_RELEASE_VERSION: ${{ github.event.client_payload.release_version }}
@@ -58,7 +61,23 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "Source repository: $RAW_REPOSITORY"
           echo "Run ID: $RAW_RUN_ID"
-  
+
+      - name: Verify source repository is allowlisted
+        run: |
+          set -e
+          ALLOWLIST=".github/release-report-allowed-owners.txt"
+          if [[ ! -f "$ALLOWLIST" ]]; then
+            echo "::error::Allowlist file $ALLOWLIST not found"
+            exit 1
+          fi
+          OWNER="${SOURCE_REPO%%/*}"
+          # Match the owner against allowlist entries, ignoring comments and blanks.
+          if ! grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" | grep -qx "$OWNER"; then
+            echo "::error::Source repository '$SOURCE_REPO' is not allowlisted (owner '$OWNER' not in $ALLOWLIST)"
+            exit 1
+          fi
+          echo "Source repository '$SOURCE_REPO' is allowlisted (owner: $OWNER)"
+
       - name: Wait for workflow completion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -83,6 +102,20 @@ jobs:
 
           if [ $elapsed -ge $timeout ]; then
             echo "::error::Timeout waiting for workflow to complete"
+            exit 1
+          fi
+
+      - name: Verify source run concluded successfully
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # The dispatch payload is untrusted; read the conclusion from the run
+          # itself so a failed/cancelled run cannot be archived as release evidence.
+          conclusion=$(gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID --jq '.conclusion')
+          echo "Run $RUN_ID conclusion: $conclusion"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::Refusing to archive run $RUN_ID from $SOURCE_REPO: conclusion '$conclusion' (expected 'success')"
             exit 1
           fi
 
