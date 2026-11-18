@@ -24,11 +24,16 @@ jobs:
       contents: read
 
     steps:
-      - name: Validate version
+      - name: Validate inputs
         env:
+          COMPONENT: ${{ inputs.component }}
           VERSION: ${{ inputs.version }}
         run: |
           set -e
+          if ! [[ "$COMPONENT" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+            echo "::error::Invalid component '$COMPONENT'. Expected a slug (e.g. my-component)."
+            exit 1
+          fi
           if ! [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Invalid version '$VERSION'. Expected semver (e.g. 1.2.3, v1.2.3, 1.2.3-rc.1)."
             exit 1
@@ -91,11 +96,13 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          COMPONENT: ${{ inputs.component }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -e
           payload=$(jq -n \
-            --arg c "${{ inputs.component }}" \
-            --arg v "${{ inputs.version }}" \
+            --arg c "$COMPONENT" \
+            --arg v "$VERSION" \
             --arg t "$OIDC_TOKEN" \
             '{
               event_type: "upload-component-sbom",
@@ -124,17 +131,28 @@ jobs:
         if: failure()
         env:
           SLACK_WEBHOOK: ${{ secrets.COMPLIANCY_SLACK_WEBHOOK_URL }}
+          COMPONENT: ${{ inputs.component }}
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
-          curl -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "blocks": [
+          payload=$(jq -n \
+            --arg component "$COMPONENT" \
+            --arg version   "$VERSION" \
+            --arg repo      "$REPO" \
+            --arg run_url   "$SERVER_URL/$REPO/actions/runs/$RUN_ID" \
+            '{
+              blocks: [
                 {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ":x: *Notify Component SBOM Failed*\n*Repository:* ${{ github.repository }}\n*Component:* ${{ inputs.component }}\n*Version:* ${{ inputs.version }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: (":x: *Notify Component SBOM Failed*\n*Repository:* " + $repo + "\n*Component:* " + $component + "\n*Version:* " + $version + "\n*Run:* <" + $run_url + "|View Run>")
                   }
                 }
               ]
-            }'
+            }')
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$payload"
