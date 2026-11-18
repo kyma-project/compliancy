@@ -22,54 +22,85 @@ jobs:
           owner: kyma-project
           repositories: compliancy
 
-      - name: Send repository_dispatch
+      - name: Validate and send repository_dispatch
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RAW_RELEASE_VERSION: ${{ inputs.release_version }}
+          PAYLOAD_REPOSITORY: ${{ github.repository }}
+          PAYLOAD_RUN_ID: ${{ github.run_id }}
+          PAYLOAD_WORKFLOW: ${{ github.workflow }}
+          PAYLOAD_CONCLUSION: ${{ job.status }}
+          PAYLOAD_BRANCH: ${{ github.ref_name }}
         run: |
           set -e
+
+          if [[ -n "$RAW_RELEASE_VERSION" ]] && \
+             [[ ! "$RAW_RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$ ]]; then
+            echo "::error::Invalid release_version — must be strict semver (e.g. 1.2.3 or 1.2.3-alpha.1)"
+            exit 1
+          fi
+
+          payload=$(jq -n \
+            --arg repository    "$PAYLOAD_REPOSITORY" \
+            --arg run_id        "$PAYLOAD_RUN_ID" \
+            --arg workflow      "$PAYLOAD_WORKFLOW" \
+            --arg conclusion    "$PAYLOAD_CONCLUSION" \
+            --arg branch        "$PAYLOAD_BRANCH" \
+            --arg release_version "$RAW_RELEASE_VERSION" \
+            '{
+              event_type: "upload-release-report",
+              client_payload: {
+                repository:      $repository,
+                run_id:          $run_id,
+                workflow:        $workflow,
+                conclusion:      $conclusion,
+                branch:          $branch,
+                release_version: $release_version
+              }
+            }')
 
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
             https://api.github.com/repos/kyma-project/compliancy/dispatches \
-            -d '{
-              "event_type": "upload-release-report",
-              "client_payload": {
-                "repository": "${{ github.repository }}",
-                "run_id": "${{ github.run_id }}",
-                "workflow": "${{ github.workflow }}",
-                "conclusion": "${{ job.status }}",
-                "branch": "${{ github.ref_name }}",
-                "release_version": "${{ inputs.release_version }}"
-              }
-            }')
-    
+            -d "$payload")
+
           BODY=$(echo "$RESPONSE" | head -n -1)
           STATUS=$(echo "$RESPONSE" | tail -n1)
-    
+
           echo "HTTP Status: $STATUS"
-          echo "Response: $BODY"
-    
+          [ -n "$BODY" ] && echo "Response: $BODY"
+
           if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 300 ]; then
-            echo "repository_dispatch failed"
+            echo "::error::repository_dispatch failed"
             exit 1
           fi
-          
+
       - name: Notify Slack on failure
         if: failure()
         env:
           SLACK_WEBHOOK: ${{ secrets.COMPLIANCY_SLACK_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
-          curl -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "blocks": [
+          payload=$(jq -n \
+            --arg repo     "$REPO" \
+            --arg workflow "$WORKFLOW" \
+            --arg run_url  "$SERVER_URL/$REPO/actions/runs/$RUN_ID" \
+            '{
+              blocks: [
                 {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ":x: *Notify Release Report Failed*\n*Repository:* ${{ github.repository }}\n*Workflow:* ${{ github.workflow }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: (":x: *Notify Release Report Failed*\n*Repository:* " + $repo + "\n*Workflow:* " + $workflow + "\n*Run:* <" + $run_url + "|View Run>")
                   }
                 }
               ]
-            }'
+            }')
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$payload"

@@ -16,17 +16,52 @@ jobs:
       
     steps:
       - name: Set release version
+        env:
+          RAW_RELEASE_VERSION: ${{ github.event.client_payload.release_version }}
         run: |
-          echo "RELEASE_VERSION=${{ github.event.client_payload.release_version }}" >> $GITHUB_ENV
-          echo "Release number: ${{ github.event.client_payload.release_version }}"
-  
-      - name: Resolve run ID
-        run: echo "RUN_ID=${{ github.event.client_payload.run_id || github.event.client_payload.run_id }}" >> $GITHUB_ENV
+          set -e
+          if [[ -n "$RAW_RELEASE_VERSION" ]] && \
+             [[ ! "$RAW_RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$ ]]; then
+            echo "::error::Invalid release_version — must be strict semver (e.g. 1.2.3 or 1.2.3-alpha.1)"
+            exit 1
+          fi
+          {
+            echo "RELEASE_VERSION<<DELIMITER_RELEASE_VERSION"
+            echo "$RAW_RELEASE_VERSION"
+            echo "DELIMITER_RELEASE_VERSION"
+          } >> "$GITHUB_ENV"
+          echo "Release version: $RAW_RELEASE_VERSION"
+
+      - name: Resolve run ID and repository
+        env:
+          RAW_RUN_ID: ${{ github.event.client_payload.run_id }}
+          RAW_REPOSITORY: ${{ github.event.client_payload.repository }}
+        run: |
+          set -e
+          if [[ ! "$RAW_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid run_id — must be a positive integer"
+            exit 1
+          fi
+          if [[ ! "$RAW_REPOSITORY" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
+            echo "::error::Invalid repository — must be owner/repo format"
+            exit 1
+          fi
+          {
+            echo "RUN_ID<<DELIMITER_RUN_ID"
+            echo "$RAW_RUN_ID"
+            echo "DELIMITER_RUN_ID"
+          } >> "$GITHUB_ENV"
+          {
+            echo "SOURCE_REPO<<DELIMITER_SOURCE_REPO"
+            echo "$RAW_REPOSITORY"
+            echo "DELIMITER_SOURCE_REPO"
+          } >> "$GITHUB_ENV"
+          echo "Source repository: $RAW_REPOSITORY"
+          echo "Run ID: $RAW_RUN_ID"
   
       - name: Wait for workflow completion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ github.event.client_payload.repository }}
         run: |
           echo "Waiting for workflow run $RUN_ID from $SOURCE_REPO to complete..."
 
@@ -54,7 +89,6 @@ jobs:
       - name: Fetch workflow data and create report
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ github.event.client_payload.repository }}
         run: |
           echo "Fetching workflow run details for RUN_ID=$RUN_ID from $SOURCE_REPO..."
           gh api repos/$SOURCE_REPO/actions/runs/$RUN_ID > run_summary.json
@@ -109,8 +143,6 @@ jobs:
           project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
   
       - name: Upload report to the GCP bucket
-        env:
-          SOURCE_REPO: ${{ github.event.client_payload.repository }}
         run: |
           # Extract repo name from full path (e.g., kyma/module-name -> module-name)
           REPO_NAME=$(echo "$SOURCE_REPO" | awk -F'/' '{print $NF}')
@@ -121,42 +153,31 @@ jobs:
         if: failure()
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.COMPLIANCY_SLACK_WEBHOOK_URL }}
+          RUN_URL: "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         run: |
-          SOURCE_REPO="${{ github.event.client_payload.repository }}"
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          curl -X POST "$SLACK_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "text": "Release Report Workflow Failed",
-              "blocks": [
+          payload=$(jq -n \
+            --arg source_repo "$SOURCE_REPO" \
+            --arg release     "$RELEASE_VERSION" \
+            --arg run_id      "$RUN_ID" \
+            --arg run_url     "$RUN_URL" \
+            '{
+              text: "Release Report Workflow Failed",
+              blocks: [
                 {
-                  "type": "header",
-                  "text": {
-                    "type": "plain_text",
-                    "text": "Release Report Failed"
-                  }
+                  type: "header",
+                  text: {type: "plain_text", text: "Release Report Failed"}
                 },
                 {
-                  "type": "section",
-                  "fields": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Repository:*\n'"$SOURCE_REPO"'"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Release:*\n'"$RELEASE_VERSION"'"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Source Run:*\n'"$RUN_ID"'"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Workflow:*\n<'"$RUN_URL"'|View Logs>"
-                    }
+                  type: "section",
+                  fields: [
+                    {type: "mrkdwn", text: ("*Repository:*\n" + $source_repo)},
+                    {type: "mrkdwn", text: ("*Release:*\n"    + $release)},
+                    {type: "mrkdwn", text: ("*Source Run:*\n" + $run_id)},
+                    {type: "mrkdwn", text: ("*Workflow:*\n<"  + $run_url + "|View Logs>")}
                   ]
                 }
               ]
-            }'
+            }')
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$payload"
