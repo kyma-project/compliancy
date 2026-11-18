@@ -1,0 +1,11 @@
+# Owners (GitHub orgs) allowed to submit release reports to release-report.yml.
+#
+# A repository_dispatch (event_type: upload-release-report) is accepted only if
+# the owner of client_payload.repository appears below. This is the source-repo
+# provenance gate for the compliance audit bucket (finding 845d0104,
+# CWE-345/CWE-862). One owner per line; blank lines and '#' comments are ignored.
+#
+# This workflow is only ever called by Kyma release repositories in the
+# kyma-project org, so the allowlist is owner-level by design — add an org here,
+# not individual repos.
+kyma-project
